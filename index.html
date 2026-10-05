@@ -1,0 +1,147 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="apple-mobile-web-app-capable" content="yes"><title>AT SLOT Reel Control v10</title><style>
+*{box-sizing:border-box}body{margin:0;background:#0d0f14;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;justify-content:center}.app{width:min(100%,540px);padding:12px 12px 30px}.top{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}.panel,.mode{background:#191d27;border:1px solid #343a49;border-radius:10px;padding:8px;text-align:center}.label{font-size:11px;color:#9da6b8}.value{font-size:19px;font-weight:900}.mode{margin:8px 0}.mode b{font-size:21px}.sub{font-size:13px;color:#b8c0d0;margin-top:3px;min-height:18px}.status{min-height:52px;margin:8px 0;background:#10131a;border:1px solid #343a49;border-radius:10px;padding:10px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:800}.reels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:#050608;padding:8px;border-radius:12px}.reel{height:190px;background:#fafafa;color:#111;border:3px solid #555;border-radius:9px;overflow:hidden;position:relative;font-size:29px;font-weight:900}.track{position:absolute;left:0;top:0;width:100%;will-change:transform;transform:translate3d(0,0,0)}.cell{height:58px;width:100%;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #ddd;background:#fafafa}.payline{position:absolute;left:0;right:0;top:64px;height:58px;border-top:2px solid #d33;border-bottom:2px solid #d33;background:rgba(255,241,181,.28);pointer-events:none;z-index:3}.controls{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:8px}.stop,.lever{border:0;border-radius:12px;font-weight:900;color:#fff;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.stop{height:54px;background:#cf3030}.stop:disabled,.lever:disabled{background:#4b4f59;color:#999}.lever{height:64px;width:100%;margin-top:8px;background:#1769e0;font-size:21px}.log{margin-top:10px;background:#151922;border-radius:10px;padding:9px;font-size:12px;line-height:1.55;color:#cbd2df;max-height:145px;overflow:auto}.hint{font-size:11px;color:#8f98aa;margin-top:8px;text-align:center}.debug{margin-top:8px;padding:8px;border:1px dashed #4d5668;border-radius:8px;font-size:11px;color:#aeb7c8;text-align:center}
+</style></head><body><main class="app">
+<div class="top"><div class="panel"><div class="label">MODE（仮表示）</div><div id="modeMini" class="value">通常</div></div><div class="panel"><div class="label">GAMES</div><div id="games" class="value">0</div></div><div class="panel"><div class="label">AT残り</div><div id="atLeft" class="value">-</div></div></div>
+<div class="mode"><b id="modeTitle">通常時</b><div id="modeSub" class="sub">21コマ固定リール v11 / 1周0.75秒 / 上→下回転</div></div><div id="status" class="status">LEVER ONを押してください</div>
+<section class="reels"><div id="r0" class="reel"></div><div id="r1" class="reel"></div><div id="r2" class="reel"></div></section>
+<div class="controls"><button id="s0" class="stop" disabled>左 STOP</button><button id="s1" class="stop" disabled>中 STOP</button><button id="s2" class="stop" disabled>右 STOP</button></div><button id="lever" class="lever">LEVER ON</button>
+<div id="debug" class="debug">成立役：- ／ 停止出目：-</div>
+<details class="debug" style="text-align:left"><summary>21コマ配列を表示</summary><div id="reelTable" style="margin-top:6px;line-height:1.55"></div></details><div id="log" class="log">v11：1周0.75秒＋上→下回転＋チャンス目＋ハズレ停止形ガード。</div><div class="hint">※状態名・成立役表示は開発確認用。完成版では非表示にできます。</div>
+</main><script>
+(()=>{'use strict';
+const reels=[
+ // 左：RE/ベル/CZ/チェリーは最大5コマで引き込み可能。BAR狙いの基準も確保。
+ ['RE','🍒','🔔','BAR','CZ','RE','🍒','🔔','7','CZ','RE','🍒','🔔','BAR','CZ','RE','🍒','🔔','7','CZ','CH'],
+ // 中：8-10番が 7 / ベル / 7。1番ベル・20番RE。RE/ベル/CZ/チェリーは最大5コマで引き込み可能。
+ ['🔔','🍒','🔔','RE','CZ','RE','🍒','7','🔔','7','CZ','RE','🍒','🔔','RE','CZ','🔔','🍒','BAR','RE','CZ'],
+ // 右：1-3番が BAR / RE / BAR。RE/ベル/CZは最大5コマで引き込み可能。
+ ['BAR','RE','BAR','CZ','🔔','CH','RE','7','CZ','🔔','CH','RE','7','CZ','🔔','🍒','7','RE','CZ','🔔','CH']
+];
+const $=id=>document.getElementById(id),stops=[$('s0'),$('s1'),$('s2')];
+let current=[0,0,0],spinning=false,stopped=[true,true,true],stopping=[false,false,false],firstStop=-1,role='miss',targets=[0,0,0];
+const CELL_H=58, VIEW_H=190, COPIES=5, BASE_COPY=2;
+let visualPos=[0,0,0], spinSpeed=[28,28,28], lastTs=0, rafId=0;
+let stopAnim=[null,null,null];
+let S={mode:'normal',games:0,czLeft:0,czPt:0,atLeft:0,stocks:0,preLeft:0,rewardNext:false,weakLeft:0,weakSum:0,weakAllBell:true,strongGuarantee:0,strongSum:0};
+const rn={miss:'ハズレ',bell:'ベル',replay:'リプレイ',cz:'CZ役',weak:'弱チェリー',chance:'チャンス目',strong:'強チェリー'};
+function buildReelDOM(i){
+ const reel=$('r'+i);reel.innerHTML='';
+ const track=document.createElement('div');track.className='track';track.id='track'+i;
+ for(let cp=0;cp<COPIES;cp++)for(let k=0;k<21;k++){
+  const d=document.createElement('div');d.className='cell';d.textContent=reels[i][k];track.appendChild(d);
+ }
+ const line=document.createElement('div');line.className='payline';
+ reel.appendChild(track);reel.appendChild(line);
+}
+function renderReel(i){
+ const mod=((visualPos[i]%21)+21)%21;
+ const logical=BASE_COPY*21+mod;
+ const y=VIEW_H/2-(logical*CELL_H+CELL_H/2);
+ $('track'+i).style.transform=`translate3d(0,${y}px,0)`;
+}
+function easeOutCubic(t){return 1-Math.pow(1-t,3)}
+function animate(ts){
+ if(!lastTs)lastTs=ts;const dt=Math.min((ts-lastTs)/1000,.04);lastTs=ts;
+ let active=spinning;
+ for(let i=0;i<3;i++){
+  if(spinning&&!stopped[i]&&!stopping[i]) visualPos[i]-=spinSpeed[i]*dt;
+  const a=stopAnim[i];
+  if(a){
+   const t=Math.min(1,(ts-a.start)/a.duration);visualPos[i]=a.from+(a.to-a.from)*easeOutCubic(t);
+   if(t>=1){stopAnim[i]=null;stopping[i]=false;stopped[i]=true;current[i]=targets[i];visualPos[i]=targets[i];renderReel(i);onReelStopped(i);continue}
+  }
+  renderReel(i);
+  if(!stopped[i]||stopping[i])active=true;
+ }
+ if(active)rafId=requestAnimationFrame(animate);else{rafId=0;lastTs=0}
+}
+for(let i=0;i<3;i++){buildReelDOM(i);visualPos[i]=current[i];renderReel(i)}
+const rt=$('reelTable');if(rt){let h='<div style="display:grid;grid-template-columns:34px 1fr 1fr 1fr;gap:2px"><b>#</b><b>左</b><b>中</b><b>右</b>';for(let k=0;k<21;k++)h+=`<span>${k+1}</span><span>${reels[0][k]}</span><span>${reels[1][k]}</span><span>${reels[2][k]}</span>`;h+='</div>';rt.innerHTML=h;}
+function rnd(){return Math.random()}
+function chooseRole(){let x=rnd();const special=1/120+1/60+1/50+1/7.3;if(x<1/120)return'strong';if(x<1/120+1/60)return rnd()<.5?'weak':'chance';if(x<1/120+1/60+1/50)return'cz';if(x<special)return'replay';if(S.mode==='normal'||S.mode==='cz'){if(x<special+.10)return'bell';return'miss'}return'bell'}
+function log(t){$('log').innerHTML=t+'<br>'+$('log').innerHTML}
+function ui(msg){$('games').textContent=S.games;$('atLeft').textContent=['at','pre','reward','weak','strong'].includes(S.mode)?S.atLeft:'-';let m='',sub='';if(S.mode==='normal'){m='通常時';sub='ベル1/10・ハズレあり'}if(S.mode==='cz'){m='CZ';sub=`残り ${S.czLeft}G / ${S.czPt}pt`}if(S.mode==='at'){m='AT';sub=`残り ${S.atLeft}G / ストック ${S.stocks}`}if(S.mode==='pre'){m='BATTLE 前兆';sub=`残り ${S.preLeft}G`}if(S.mode==='reward'){m='WIN - 報酬決定';sub='このゲームの成立役で報酬決定'}if(S.mode==='weak'){m='弱特化';sub=`残り ${S.weakLeft}G / 上乗せ +${S.weakSum}G`}if(S.mode==='strong'){m='強特化';sub=`上乗せ +${S.strongSum}G / 7揃い継続中`}$('modeTitle').textContent=m;$('modeMini').textContent=m.replace('時','').replace('BATTLE 前兆','前兆').replace('WIN - 報酬決定','報酬');$('modeSub').textContent=sub;if(msg)$('status').textContent=msg}
+function positions(i,s){const out=[];reels[i].forEach((v,k)=>{if(v===s)out.push(k)});return out}
+function nearest(i,s,offset=0){const p=positions(i,s);if(!p.length)return current[i];let best=p[0],dist=99;for(const k of p){const d=(k-current[i]+21)%21;if(d<dist){dist=d;best=k}}return p[(p.indexOf(best)+offset)%p.length]}
+function shownSymbol(reelIndex,center,row){const n=21;return reels[reelIndex][(center+row+n)%n]}
+function visibleLines(t){return [
+ [shownSymbol(0,t[0],-1),shownSymbol(1,t[1],-1),shownSymbol(2,t[2],-1)],
+ [shownSymbol(0,t[0],0), shownSymbol(1,t[1],0), shownSymbol(2,t[2],0)],
+ [shownSymbol(0,t[0],1), shownSymbol(1,t[1],1), shownSymbol(2,t[2],1)],
+ [shownSymbol(0,t[0],-1),shownSymbol(1,t[1],0), shownSymbol(2,t[2],1)],
+ [shownSymbol(0,t[0],1), shownSymbol(1,t[1],0), shownSymbol(2,t[2],-1)]
+]}
+function isTriple(line){return line[0]===line[1]&&line[1]===line[2]}
+function dist(i,k){return (k-current[i]+21)%21}
+function candidatesFor(i,s){if(!s)return Array.from({length:21},(_,k)=>k);return positions(i,s)}
+function isMiddleSevenBellSeven(center){
+ const n=21,a=reels[1];
+ return a[(center-1+n)%n]==='7' && a[center]==='🔔' && a[(center+1)%n]==='7';
+}
+function isRightBarReplayBar(center){
+ const n=21,a=reels[2];
+ return a[(center-1+n)%n]==='BAR' && a[center]==='RE' && a[(center+1)%n]==='BAR';
+}
+function chooseSafeTargets(wanted,opts={}){const cs=wanted.map((s,i)=>candidatesFor(i,s));let best=null,bestScore=1e9;const isMiss=wanted.every(v=>v===null);
+ for(const a of cs[0])for(const b of cs[1])for(const c of cs[2]){const t=[a,b,c],lines=visibleLines(t);let bad=false;
+  // 中段は成立役として指定した並びを許可。その他4ラインは同一図柄3つを禁止。
+  for(let li=0;li<lines.length;li++){if(li!==1&&isTriple(lines[li])){bad=true;break}}
+  // ハズレでは中段も含め、見た目上の3つ揃いを全面禁止。
+  if(isMiss&&lines.some(isTriple))bad=true;
+  // 1ライン機の役構成がハズレで偶然完成するのも禁止。
+  // 弱チェリー=🍒🍒🔔 / 強チェリー=🍒🍒RE / チャンス目=RE RE 🍒
+  if(isMiss){const mid=lines[1];
+   if((mid[0]==='🍒'&&mid[1]==='🍒'&&(mid[2]==='🔔'||mid[2]==='RE')) ||
+      (mid[0]==='RE'&&mid[1]==='RE'&&mid[2]==='🍒')) bad=true;
+  }
+  // 二確目「左中段ベル + 中7-ベル-7」はベル成立時だけ許可。
+  if(reels[0][a]==='🔔' && isMiddleSevenBellSeven(b) && !opts.allowBellTwoStop)bad=true;
+  // ハズレで左中段REなら、右BAR-RE-BARは停止禁止。
+  if(isMiss && reels[0][a]==='RE' && isRightBarReplayBar(c))bad=true;
+  if(bad)continue;
+  let score=dist(0,a)+dist(1,b)+dist(2,c);
+  // ベル成立時は、押し位置が近いなら二確目を優先して選びやすくする。
+  if(opts.preferBellTwoStop && reels[0][a]==='🔔' && isMiddleSevenBellSeven(b))score-=8;
+  if(score<bestScore){bestScore=score;best=t}}
+ return best||[current[0],current[1],current[2]]
+}
+function buildTargets(r){
+ if(r==='replay')return chooseSafeTargets(['RE','RE','RE']);
+ if(r==='bell')return chooseSafeTargets(['🔔','🔔','🔔'],{allowBellTwoStop:true,preferBellTwoStop:true});
+ if(r==='cz')return chooseSafeTargets(['CZ','CZ','CZ']);
+ if(r==='weak')return chooseSafeTargets(['🍒','🍒','🔔']);
+ if(r==='chance')return chooseSafeTargets(['RE','RE','🍒']);
+ if(r==='strong')return chooseSafeTargets(['🍒','🍒','RE']);
+ return chooseSafeTargets([null,null,null])
+}
+function start(){if(spinning)return;spinning=true;stopped=[false,false,false];stopping=[false,false,false];stopAnim=[null,null,null];firstStop=-1;role=chooseRole();targets=buildTargets(role);$('lever').disabled=true;stops.forEach(b=>b.disabled=false);ui('回転中…');$('debug').textContent=`成立役：${rn[role]} ／ 停止出目：回転中`;lastTs=0;if(!rafId)rafId=requestAnimationFrame(animate)}
+function stop(i){
+ if(!spinning||stopped[i]||stopping[i])return;if(firstStop<0)firstStop=i;stopping[i]=true;stops[i].disabled=true;
+ const mod=((visualPos[i]%21)+21)%21;let delta=(mod-targets[i]+21)%21;
+ // タップ後も少し回しながら減速して停止。DOM差し替えではなく連続transformで描画する。
+ if(delta<2.2)delta+=21;
+ const duration=280+i*35;
+ stopAnim[i]={from:visualPos[i],to:visualPos[i]-delta,start:performance.now(),duration};
+ if(!rafId){lastTs=0;rafId=requestAnimationFrame(animate)}
+}
+function onReelStopped(i){
+ if(stopped.every(Boolean)){
+  spinning=false;$('lever').disabled=false;const line=current.map((c,j)=>reels[j][c]);$('debug').textContent=`成立役：${rn[role]} ／ 停止出目：${line.join(' ｜ ')}`;stops.forEach(b=>b.disabled=true);resolve(role)
+ }
+}
+function addAT(n){S.atLeft+=n;log(`AT +${n}G`)}function enterAT(){S.mode='at';S.atLeft=30;S.stocks=0;if(rnd()<.30)S.stocks=1+Math.floor(rnd()*3);log(`🚀 AT START 30G${S.stocks?` / ストック${S.stocks}`:''}`);ui('AT START!')}
+function resolve(r){S.games++;let msg=`${rn[r]} 成立`;
+ if(S.mode==='normal'){if(r==='cz'){S.mode='cz';S.czLeft=8;S.czPt=0;log('⚡ CZ突入：8G');msg='CZ役！ → CZ突入'}}
+ else if(S.mode==='cz'){S.czLeft--;if(r==='bell'||r==='replay')S.czPt++;else if(r==='weak'||r==='chance'||r==='cz')S.czPt+=rnd()<.5?2:3;else if(r==='strong'){log('🔥 強レア役！CZ突破確定');enterAT();return ui('強レア役 → AT確定！')}msg=`${rn[r]} / ${S.czPt}pt`;if(S.czLeft<=0){let p=[.05,.10,.25,.65,.90,1][Math.min(S.czPt,5)];if(rnd()<p){log(`CZ ${S.czPt}pt → AT当選`);enterAT();return}else{log(`CZ ${S.czPt}pt → 失敗`);S.mode='normal'}}}
+ else if(S.mode==='at'){S.atLeft--;let bp=r==='cz'?.50:(r==='weak'||r==='chance')?.10:r==='strong'?.75:0;if(bp&&rnd()<bp){S.mode='pre';S.preLeft=3;log(`⚔️ ${rn[r]}からバトル当選 → 3G前兆`);msg='バトル前兆へ！'}finishATIfNeeded()}
+ else if(S.mode==='pre'){S.preLeft--;S.atLeft--;if(S.preLeft===0){let winP={miss:0,bell:1/3.3,replay:.5,cz:1/1.5,weak:.8,chance:.8,strong:1}[r];if(rnd()<winP){S.mode='reward';log(`7️⃣ 7揃い！ ${rn[r]}参照 → WIN`);msg='7 7 7 WIN!! 次G報酬決定'}else{S.mode='at';log(`バトル敗北 / ${rn[r]}参照`);msg='バトル敗北…';finishATIfNeeded()}}else msg=`前兆 ${S.preLeft}G / ${rn[r]}`}
+ else if(S.mode==='reward'){reward(r);return}
+ else if(S.mode==='weak'){S.weakLeft--;let g=r==='bell'?5:r==='replay'?10:(r==='cz'||r==='weak'||r==='chance')?30:r==='strong'?100:0;S.weakSum+=g;if(r!=='bell')S.weakAllBell=false;msg=`${rn[r]} +${g}G`;if(S.weakLeft===0){if(S.weakAllBell){S.weakSum+=50;log('🔔 オールベル！追加 +50G')}addAT(S.weakSum);log(`弱特化終了：合計 +${S.weakSum}G`);S.mode='at';finishATIfNeeded()}}
+ else if(S.mode==='strong'){strongStep();return}ui(msg)}
+function finishATIfNeeded(){if(S.atLeft<=0&&S.mode==='at'){if(S.stocks>0){S.stocks--;S.atLeft=30;log('🔁 セットストック使用 → 30G')}else{log('AT END');S.mode='normal';S.atLeft=0;ui('AT終了 → 通常時')}}}
+function reward(r){let x=rnd();if(r==='bell'){if(x<.20)return enterWeak('ベル20% → 弱特化');addAT(20);S.mode='at';log('報酬：+20G');return ui('報酬 +20G')}if(r==='replay'){if(x<.20)return enterStrong('リプレイ20% → 強特化');return enterWeak('リプレイ80% → 弱特化')}if(r==='cz'||r==='weak'||r==='chance'){if(x<.5)return enterWeak(`${rn[r]} 50% → 弱特化`);return enterStrong(`${rn[r]} 50% → 強特化`)}if(r==='strong')return enterStrong('強レア役 → 強特化確定');addAT(20);S.mode='at';ui('報酬 +20G')}
+function enterWeak(reason){S.mode='weak';S.weakLeft=5;S.weakSum=0;S.weakAllBell=true;log(`💥 ${reason}`);ui('弱特化 START：5G')}
+function enterStrong(reason){S.mode='strong';S.strongGuarantee=3;S.strongSum=0;log(`🔥 ${reason}`);ui('強特化 START：最低3回＋80%継続')}
+function strongStep(){let x=rnd(),g=x<.90?20:x<.95?30:x<.99?50:100;if(S.strongGuarantee>0){S.strongGuarantee--;S.strongSum+=g;log(`7️⃣ +${g}G（保証残り${S.strongGuarantee}）`);return ui(`7揃い！ +${g}G`)}if(rnd()<.80){S.strongSum+=g;log(`7️⃣ +${g}G → 80%継続！`);return ui(`7揃い！ +${g}G → 継続`)}addAT(S.strongSum);log(`強特化終了：合計 +${S.strongSum}G`);S.mode='at';finishATIfNeeded();ui('強特化 END')}
+$('lever').addEventListener('click',start);stops.forEach((b,i)=>b.addEventListener('click',()=>stop(i)));ui();
+})();</script></body></html>
